@@ -142,6 +142,23 @@ describe('SearchController', () => {
     });
   });
 
+  it('should search immediately without waiting for debounce', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([spain]));
+    vi.stubGlobal('fetch', fetchMock);
+    const onSearch = vi.fn();
+    const controller = new SearchController({ debounceMs: 350, onSearch });
+
+    controller.searchImmediately('spain');
+
+    expect(controller.getState().status).toBe('loading');
+    expect(onSearch).toHaveBeenCalledWith('spain');
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(controller.getState().status).toBe('success');
+  });
+
   it('should retry the last query', async () => {
     const fetchMock = vi
       .fn()

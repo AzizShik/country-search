@@ -4,10 +4,13 @@ import type { SearchState } from '../search/search-controller.js';
 export interface AppViewHandlers {
   onQueryChange: (value: string) => void;
   onRetry: () => void;
+  onHistorySelect: (query: string) => void;
 }
 
 export interface AppView {
   update: (state: SearchState) => void;
+  setHistory: (items: string[]) => void;
+  setQueryValue: (value: string) => void;
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US');
@@ -180,7 +183,13 @@ export function createAppView(root: HTMLElement, handlers: AppViewHandlers): App
   input.autocomplete = 'off';
   input.setAttribute('aria-label', 'Search countries');
   input.setAttribute('aria-controls', 'search-results');
-  searchField.append(input);
+
+  const historySection = createElement('section', 'search-history');
+  historySection.hidden = true;
+  const historyTitle = createElement('p', 'history-title', 'Recent searches');
+  const historyList = createElement('div', 'history-list');
+  historySection.append(historyTitle, historyList);
+  searchField.append(input, historySection);
 
   header.append(title, subtitle, searchField);
 
@@ -230,6 +239,23 @@ export function createAppView(root: HTMLElement, handlers: AppViewHandlers): App
   input.focus({ preventScroll: true });
 
   return {
+    setHistory(items: string[]): void {
+      historySection.hidden = items.length === 0;
+      historyList.replaceChildren(
+        ...items.map((query) => {
+          const button = createElement('button', 'history-item', query);
+          button.type = 'button';
+          button.addEventListener('click', () => {
+            handlers.onHistorySelect(query);
+          });
+          return button;
+        }),
+      );
+    },
+    setQueryValue(value: string): void {
+      input.value = value;
+      input.focus({ preventScroll: true });
+    },
     update(state: SearchState): void {
       status.hidden = state.status === 'success';
       idle.hidden = state.status !== 'idle';

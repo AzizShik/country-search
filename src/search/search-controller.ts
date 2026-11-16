@@ -22,6 +22,7 @@ export type SearchFn = (query: string, signal: AbortSignal) => Promise<RawCountr
 export interface SearchControllerOptions {
   debounceMs?: number;
   search?: SearchFn;
+  onSearch?: (query: string) => void;
 }
 
 type Listener = (state: SearchState) => void;
@@ -39,12 +40,14 @@ export class SearchController {
   private state: SearchState = createInitialState();
   private readonly listeners = new Set<Listener>();
   private readonly search: SearchFn;
+  private readonly onSearch?: (query: string) => void;
   private readonly debouncedSearch: DebouncedFunction<[string]>;
   private activeController: AbortController | null = null;
   private currentQuery = '';
 
   constructor(options: SearchControllerOptions = {}) {
     this.search = options.search ?? searchCountries;
+    this.onSearch = options.onSearch;
     this.debouncedSearch = debounce((query: string): void => {
       void this.run(query);
     }, options.debounceMs ?? DEFAULT_DEBOUNCE_MS);
@@ -67,8 +70,7 @@ export class SearchController {
     const query = value.trim();
     this.currentQuery = query;
     this.debouncedSearch.cancel();
-    this.activeController?.abort();
-    this.activeController = null;
+    this.cancelActiveRequest();
 
     if (!query) {
       this.setState(createInitialState());
@@ -82,6 +84,25 @@ export class SearchController {
       error: null,
     });
     this.debouncedSearch(query);
+  }
+
+  searchImmediately(query: string): void {
+    const normalized = query.trim();
+
+    if (!normalized) {
+      return;
+    }
+
+    this.currentQuery = normalized;
+    this.debouncedSearch.cancel();
+    this.cancelActiveRequest();
+    this.setState({
+      status: 'loading',
+      query: normalized,
+      results: [],
+      error: null,
+    });
+    void this.run(normalized);
   }
 
   retry(): void {
@@ -101,15 +122,15 @@ export class SearchController {
 
   dispose(): void {
     this.debouncedSearch.cancel();
-    this.activeController?.abort();
-    this.activeController = null;
+    this.cancelActiveRequest();
     this.listeners.clear();
   }
 
   private async run(query: string): Promise<void> {
-    this.activeController?.abort();
+    this.cancelActiveRequest();
     const controller = new AbortController();
     this.activeController = controller;
+    this.onSearch?.(query);
 
     try {
       const raw = await this.search(query, controller.signal);
@@ -148,6 +169,11 @@ export class SearchController {
         this.activeController = null;
       }
     }
+  }
+
+  private cancelActiveRequest(): void {
+    this.activeController?.abort();
+    this.activeController = null;
   }
 
   private setState(state: SearchState): void {
