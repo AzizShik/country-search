@@ -20,6 +20,8 @@ src/
     errors.ts             — классификация AbortError / TimeoutError / HttpError
   search/
     search-controller.ts  — состояние, debounce, AbortController, retry
+    cache.ts              — кэш ответов и дедупликация одновременных запросов
+    history.ts            — история последних запросов в localStorage
   ui/
     render.ts             — DOM через createElement/textContent
   main.ts                 — composition root: controller + view
@@ -30,6 +32,8 @@ tests/
   errors.test.ts
   search-controller.test.ts
   search-race.test.ts
+  cache.test.ts
+  history.test.ts
 ```
 
 Слои не зависят от лишних деталей:
@@ -138,7 +142,43 @@ if (!response.ok) throw new HttpError(response.status, response.statusText);
 
 Клик по карточке открывает `<dialog>` с деталями: описание, площадь, границы, языки, валюта. Поля приходят из того же ответа API, отдельный запрос не нужен.
 
-## 6. Сложность
+## 6. Кэш и дедупликация
+
+`createCachedSearch` оборачивает `searchCountries` и решает две задачи.
+
+### Кэш
+
+Ключ — `query.trim().toLowerCase()`, поэтому `Spain`, `spain` и `Spain` попадают в одну запись. Кэшируются только успешные ответы, включая пустой массив (404). Ошибки не кэшируются: следующий запрос снова идёт в сеть.
+
+Кэш ограничен 50 записями и работает как LRU: при чтении запись перемещается в конец `Map`, при переполнении удаляется самая старая. Это не даёт памяти расти бесконечно при долгой сессии.
+
+### Дедупликация
+
+Если одинаковый запрос уже в полёте, второй вызывающий не создаёт новый `fetch`, а подписывается на существующий промис. Внутри хранится:
+
+```ts
+{
+  controller: AbortController,
+  promise: Promise<RawCountry[]>,
+  consumers: number
+}
+```
+
+У каждого вызывающего свой внешний `AbortSignal`. Отмена одного потребителя:
+
+1. уменьшает `consumers`;
+2. отклоняет только его собственный промис с `AbortError`;
+3. **не отменяет** общий запрос, пока живы другие потребители.
+
+Общий сетевой запрос отменяется только когда `consumers` доходит до нуля. Поэтому сценарий «один вызывающий передумал, остальные ждут результат» не ломается. Это и есть требование бонуса: сигнал отмены не должен быть общим для всех.
+
+### История
+
+`SearchHistory` хранит последние 6 запросов в `localStorage` под ключом `country-search-history`. Записи дедуплицируются без учёта регистра, новые идут первыми. Повреждённый JSON или не-массив в storage не роняют приложение: `getAll()` возвращает пустой список.
+
+Клик по истории вызывает `SearchController.searchImmediately(query)` — поиск запускается без debounce. Если ответ уже в кэше, он возвращается сразу, без сетевого запроса.
+
+## 7. Сложность
 
 `mapCountryResponse` обрабатывает одну страну:
 
@@ -151,9 +191,9 @@ if (!response.ok) throw new HttpError(response.status, response.statusText);
 
 `debounce` — O(1) на вызов и O(1) памяти. `classifyError` — O(1). `searchCountries` добавляет O(m) на парсинг JSON, где m — размер ответа. Рендер списка — O(n) по количеству карточек.
 
-Кэш и дедупликация в текущей версии не реализованы. При их добавлении `Map` даст O(1) в среднем на чтение и запись, память O(k), где k — количество уникальных запросов; при дедупликации нужно хранить отдельный `AbortController` на общий запрос и счётчик потребителей, чтобы отмена одного вызывающего не ломала промис для остальных.
+Кэш: чтение и запись в `Map` — O(1) в среднем, LRU-перемещение — O(1), память O(k), где k ≤ 50. Дедупликация: поиск в `Map` — O(1) в среднем, память O(i), где i — количество одновременных уникальных запросов (на практике 1–2). История: `getAll()` парсит массив из не более чем 6 элементов — O(h), `add()` делает `filter` + `unshift` — O(h), память O(h). Итоговая практическая сложность остаётся O(1) по числу запросов и O(n · (L + C + B)) на отображение n стран.
 
-## 7. Принципы чистого кода
+## 8. Принципы чистого кода
 
 - **Единственная ответственность.** `search-countries.ts` отвечает только за HTTP, `map-country.ts` — только за преобразование, `search-controller.ts` — за состояние и отмену, `render.ts` — за DOM.
 - **Чистые функции.** `mapCountryResponse` не мутирует вход и не обращается к сети/DOM. `classifyError` не имеет побочных эффектов. `debounce` изолирован замыканием.
@@ -162,9 +202,10 @@ if (!response.ok) throw new HttpError(response.status, response.statusText);
 - **Неизменяемость состояния.** Контроллер создаёт новый объект состояния, а `mapCountryResponse` копирует массивы (`borders: [...(raw.borders ?? [])]`).
 - **DRY.** `createElement` в `render.ts` убирает повторение `document.createElement` + `textContent`; `createDetailsField` переиспользуется для всех полей детального вида.
 - **Безопасный DOM.** В `render.ts` нет `innerHTML`/`insertAdjacentHTML`; текст пользовательских данных проходит через `textContent`.
-- **Тестируемость.** Логика не зависит от DOM, тесты используют fake timers и управляемый fetch-мок, который реагирует на `signal`.
+- **Тестируемость.** Логика не зависит от DOM, тесты используют fake timers и управляемый fetch-мок, который реагирует на `signal`. `createCachedSearch` и `SearchHistory` принимают зависимости снаружи: search-функцию и storage.
+- **Изоляция отмены.** `cache.ts` хранит отдельный внутренний `AbortController` для общего запроса и счётчик потребителей; внешний сигнал каждого вызывающего обрабатывается отдельно. `history.ts` не знает про `localStorage` напрямую — получает `StorageLike`, поэтому тестируется с in-memory storage.
 
-## 8. Тесты и порядок коммитов
+## 9. Тесты и порядок коммитов
 
 Для обязательных функций соблюдён порядок «красный тест → реализация»:
 
@@ -181,6 +222,11 @@ test: add failing tests for search controller
 feat: implement search controller
 test: add race-condition test for stale responses
 fix: abort stale requests on every input change
+test: add failing tests for cached search
+feat: add cached search with deduplication
+test: add failing tests for search history
+feat: add search history storage
+feat: integrate cached search and search history
 ```
 
 Тест гонки (`tests/search-race.test.ts`) использует мок fetch, который:
@@ -191,8 +237,8 @@ fix: abort stale requests on every input change
 
 Тест проверяет, что после ввода `spain` сигнал запроса `sp` уже отменён, ответ `spain` попадает в состояние, а поздний `sp` не может его перезаписать.
 
-## 9. Ограничения
+## 10. Ограничения
 
-- Кэш ответов и история поиска не входят в текущую реализацию.
+- Кэш живёт в памяти вкладки и очищается при перезагрузке; в `localStorage` сохраняется только история запросов.
 - `AbortSignal.any` требует современного браузера; для старых окружений нужна ручная связка сигналов.
 - API не отдаёт поле `description`, поэтому описание в детальном виде собирается из `nativeName`, `subregion` и `demonym`.
