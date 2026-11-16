@@ -8,10 +8,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "dev": "concurrently -k -n tsc,server -c blue,green \"npm:watch\" \"npm:serve\"",
-    "watch": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
-    "serve": "live-server . --port=3000  --wait=200 --ignore=node_modules --ignore=.git --ignore=coverage",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && gh-pages -d dist -m \"deploy: publish site\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -31,16 +31,16 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "concurrently": "^10.0.7",
     "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
+    "gh-pages": "^6.3.0",
     "globals": "^17.14.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.1",
-    "live-server": "^1.2.2",
     "prettier": "^3.10.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8",
     "vitest": "^5.1.0"
   }
 }
