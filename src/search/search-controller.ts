@@ -67,10 +67,10 @@ export class SearchController {
     const query = value.trim();
     this.currentQuery = query;
     this.debouncedSearch.cancel();
+    this.activeController?.abort();
+    this.activeController = null;
 
     if (!query) {
-      this.activeController?.abort();
-      this.activeController = null;
       this.setState(createInitialState());
       return;
     }
@@ -113,6 +113,11 @@ export class SearchController {
 
     try {
       const raw = await this.search(query, controller.signal);
+
+      if (query !== this.currentQuery) {
+        return;
+      }
+
       const results = raw.map(mapCountryResponse);
 
       this.setState({
